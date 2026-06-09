@@ -294,73 +294,7 @@ object LyricsPlusProvider : LyricsProvider {
      *   [mm:ss.cc]{bg}bg vocal text       ← first in a consecutive bg run
      *   <word:startSec:endSec|...>
      */
-    private fun convertToLrc(response: LyricsPlusResponse?): String? {
-        val lyrics = response?.lyrics?.takeIf { it.isNotEmpty() } ?: return null
-        val isWordSync = response.type.equals("Word", ignoreCase = true)
-
-        // Agent mapping
-        // The JSON aliases (v1, v2, v1000) are used directly. Others get mapped
-        // to the next free v1/v2 slot, falling back to v1.
-        val agentMap = linkedMapOf<String, String>() // raw alias -> lrc id
-        lyrics.forEach { line ->
-            val raw = line.element?.singer?.lowercase() ?: return@forEach
-            if (raw !in agentMap) {
-                agentMap[raw] = when {
-                    raw == "v1" || raw == "v2" || raw == "v1000" -> raw
-                    else -> {
-                        val taken = agentMap.values.toSet()
-                        listOf("v1", "v2").firstOrNull { it !in taken } ?: "v1"
-                    }
-                }
-            }
-        }
-        val isMultiAgent = agentMap.size > 1 ||
-            (agentMap.size == 1 && !agentMap.containsKey("v1"))
-
-        val sb = StringBuilder(lyrics.size * 128)
-        var lastWasBg = false
-
-        for (line in lyrics) {
-            val mainWords = line.syllabus?.filter { !it.isBackground } ?: emptyList()
-            val bgWords   = line.syllabus?.filter {  it.isBackground } ?: emptyList()
-
-            val isFullBgLine = line.syllabus != null &&
-                mainWords.isEmpty() && bgWords.isNotEmpty()
-
-            val mainText = when {
-                isWordSync && mainWords.isNotEmpty() -> buildText(mainWords)
-                isFullBgLine                         -> ""
-                else                                 -> line.text.trim()
-            }
-
-            // main line
-            if (mainText.isNotBlank()) {
-                lastWasBg = false
-                val agentId  = agentMap[line.element?.singer?.lowercase()]
-                val agentTag = if (isMultiAgent && agentId != null) "{agent:$agentId}" else ""
-                sb.appendLrcLine(line.time, agentTag, mainText)
-                if (isWordSync && mainWords.isNotEmpty()) sb.appendWordBlock(mainWords)
-            }
-
-            // background vocals
-            val bgToEmit = when {
-                bgWords.isNotEmpty() -> bgWords
-                else                 -> emptyList()
-            }
-            if (bgToEmit.isNotEmpty()) {
-                val bgText = if (isWordSync) buildText(bgToEmit) else line.text.trim()
-                if (bgText.isNotBlank()) {
-                    val bgTime = bgToEmit.minOf { it.time }
-                    val bgTag  = if (lastWasBg) "" else "{bg}"
-                    sb.appendLrcLine(bgTime, bgTag, bgText)
-                    lastWasBg = true
-                    if (isWordSync) sb.appendWordBlock(bgToEmit)
-                }
-            }
-        }
-
-        return sb.toString().trimEnd().ifBlank { null }
-    }
+    [mm:ss.mmm]<mm:ss.mmm>word<mm:ss.mmm> <mm:ss.mmm>word<mm:ss.mmm>
 
     /** Joins word texts as-is (spaces are embedded in each text value by the API). */
     private fun buildText(words: List<LyricWord>): String =
