@@ -296,82 +296,51 @@ object TTMLParser {
     }
 
     fun toLRC(lines: List<ParsedLine>): String {
-        val agentMap = mutableMapOf<String, String>()
-        
-        // Phase 1: Preserve explicit v1, v2, v1000
-        lines.forEach { line ->
-            line.agent?.lowercase()?.let { raw ->
-                if (raw == "v1" || raw == "v2" || raw == "v1000") {
-                    agentMap[raw] = raw
-                }
+    val sb = StringBuilder(lines.size * 128)
+
+    lines.forEach { line ->
+        val time = formatLrcTime(line.startTime)
+
+        // Main line
+        if (line.words.isNotEmpty()) {
+            sb.append('[').append(time.drop(1)) // [mm:ss.cc]
+            line.words.forEach { w ->
+                val start = formatLrcTime(w.startTime)
+                val end = formatLrcTime(w.endTime)
+                val text = w.text.trimEnd()
+                sb.append('<').append(start.drop(1).dropLast(1)).append('>')
+                sb.append(text)
+                sb.append('<').append(end.drop(1).dropLast(1)).append('>')
+                if (w.hasTrailingSpace) sb.append(' ')
             }
-        }
-        
-        // Phase 2: Map other agents to v1/v2 if available
-        var nextNum = 1
-        lines.forEach { line ->
-            line.agent?.lowercase()?.let { raw ->
-                if (!agentMap.containsKey(raw)) {
-                    while (nextNum <= 2 && (agentMap.containsKey("v$nextNum") || agentMap.values.contains("v$nextNum"))) {
-                        nextNum++
-                    }
-                    agentMap[raw] = if (nextNum <= 2) "v$nextNum" else "v1"
-                }
-            }
+            sb.append('\n')
+        } else if (line.text.isNotBlank()) {
+            sb.append(time).append(line.text).append('\n')
         }
 
-        // v1000 (group) shares display slot with v2 when a primary v1 vocalist exists
-        if (agentMap.containsKey("v1000") && agentMap.containsKey("v1")) {
-            agentMap["v1000"] = "v2"
-        }
-
-        val hasBackgroundLine = lines.any { it.isBackground }
-        val multi =
-            agentMap.size > 1 ||
-                (agentMap.size == 1 && !agentMap.containsKey("v1")) ||
-                (hasBackgroundLine && agentMap.size == 1 && agentMap.containsKey("v1"))
-        
-        val sb = StringBuilder(lines.size * 128)
-        var lastBg = false
-        lines.forEach { line ->
-            val time = formatLrcTime(line.startTime)
-            val isBg = line.isBackground
-            if (!isBg) lastBg = false
-            
-            val agentId = agentMap[line.agent?.lowercase()]
-            val tag = when {
-                isBg -> if (lastBg) "" else "{bg}"
-                multi && agentId != null -> "{agent:$agentId}"
-                else -> ""
-            }
-            if (isBg) lastBg = true
-
-            sb.append(time).append(tag).append(line.text).append('\n')
-            if (line.words.isNotEmpty()) {
-                sb.append('<')
-                line.words.forEachIndexed { i, w ->
-                    sb.append(w.text).append(':').append(w.startTime).append(':').append(w.endTime)
-                    if (i < line.words.lastIndex) sb.append('|')
+        // Background lines
+        line.backgroundLines.forEach { bg ->
+            val bgTime = formatLrcTime(bg.startTime)
+            if (bg.words.isNotEmpty()) {
+                sb.append('[').append(bgTime.drop(1))
+                bg.words.forEach { w ->
+                    val start = formatLrcTime(w.startTime)
+                    val end = formatLrcTime(w.endTime)
+                    val text = w.text.trimEnd()
+                    sb.append('<').append(start.drop(1).dropLast(1)).append('>')
+                    sb.append(text)
+                    sb.append('<').append(end.drop(1).dropLast(1)).append('>')
+                    if (w.hasTrailingSpace) sb.append(' ')
                 }
-                sb.append(">\n")
-            }
-            line.backgroundLines.forEach { bg ->
-                val bTag = if (lastBg) "" else "{bg}"
-                sb.append(formatLrcTime(bg.startTime)).append(bTag).append(bg.text).append('\n')
-                lastBg = true
-                if (bg.words.isNotEmpty()) {
-                    sb.append('<')
-                    bg.words.forEachIndexed { i, w ->
-                        sb.append(w.text).append(':').append(w.startTime).append(':').append(w.endTime)
-                        if (i < bg.words.lastIndex) sb.append('|')
-                    }
-                    sb.append(">\n")
-                }
+                sb.append('\n')
+            } else if (bg.text.isNotBlank()) {
+                sb.append(bgTime).append(bg.text).append('\n')
             }
         }
-        return sb.toString()
     }
 
+    return sb.toString()
+}
     private fun formatLrcTime(time: Double): String {
         val ms = (time * 1000).toLong()
         val m = ms / 60000
