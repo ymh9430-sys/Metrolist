@@ -168,8 +168,8 @@ constructor(
             }
             otherJobs.forEach { it.join() }
 
-            val otherLyricsCount = allResult.count { it.providerName != "LyricsPlus" }
-            if (lyricsPlusProvider != null && otherLyricsCount <= 2) {
+            // ✅ LyricsPlus بيشتغل دايماً بغض النظر عن عدد الـ providers التانية
+            if (lyricsPlusProvider != null) {
                 launch {
                     try {
                         lyricsPlusProvider.getAllLyrics(context, mediaId, cleanedTitle, songArtists, duration, album) { lyrics ->
