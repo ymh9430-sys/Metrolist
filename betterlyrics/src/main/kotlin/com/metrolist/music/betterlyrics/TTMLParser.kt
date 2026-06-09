@@ -7,7 +7,6 @@ import javax.xml.parsers.DocumentBuilderFactory
 
 object TTMLParser {
 
-    /** TTML timing attributes may appear unprefixed or as `ttp:*` (parameter namespace). */
     private const val TTML_PARAMETER_NS = "http://www.w3.org/ns/ttml#parameter"
 
     data class ParsedLine(
@@ -18,14 +17,14 @@ object TTMLParser {
         val isBackground: Boolean = false,
         val backgroundLines: List<ParsedLine> = emptyList()
     )
-    
+
     data class ParsedWord(
         val text: String,
         val startTime: Double,
         val endTime: Double,
         val hasTrailingSpace: Boolean = true
     )
-    
+
     private data class SpanInfo(
         val text: String,
         val startTime: Double,
@@ -49,7 +48,6 @@ object TTMLParser {
         return ""
     }
 
-    /** When `<p>` has no `begin`, use the earliest `begin` on a direct child `<span>` (some exports omit line-level timing). */
     private fun findFirstSpanBegin(p: Element): String? {
         var child = p.firstChild
         var best: String? = null
@@ -72,26 +70,23 @@ object TTMLParser {
         }
         return best
     }
-    
+
     fun parseTTML(ttml: String): List<ParsedLine> {
         val lines = mutableListOf<ParsedLine>()
         try {
             val factory = DocumentBuilderFactory.newInstance()
             factory.isNamespaceAware = true
-            
-            // On Android, some features might not be supported and throw ParserConfigurationException
             try { factory.setFeature("http://xml.org/sax/features/external-general-entities", false) } catch (e: Exception) {}
             try { factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false) } catch (e: Exception) {}
             try { factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) } catch (e: Exception) {}
             try { factory.setXIncludeAware(false) } catch (e: Exception) {}
             try { factory.isExpandEntityReferences = false } catch (e: Exception) {}
-            
+
             val builder = factory.newDocumentBuilder()
             val doc = builder.parse(ttml.byteInputStream())
             val root = doc.documentElement
 
             var globalOffset = 0.0
-            // Manual search for head/metadata/audio to avoid getElementsByTagName
             val head = findChild(root, "head")
             if (head != null) {
                 val meta = findChild(head, "metadata")
@@ -137,7 +132,7 @@ object TTMLParser {
             }
             "p" -> {
                 parseP(element, lines, offset, currentAgent)
-                return // Don't descend into p, parseP handles children
+                return
             }
         }
 
@@ -160,10 +155,10 @@ object TTMLParser {
         val startTime = parseTime(begin) + offset
         val spanInfos = mutableListOf<SpanInfo>()
         val backgroundLines = mutableListOf<ParsedLine>()
-        
+
         val agent = getAttr(p, "agent").ifEmpty { divAgent }
         val isPBackground = getAttr(p, "role") == "x-bg"
-        
+
         var child = p.firstChild
         while (child != null) {
             if (child is Element) {
@@ -182,10 +177,10 @@ object TTMLParser {
             }
             child = child.nextSibling
         }
-        
+
         val words = mergeSpansIntoWords(spanInfos)
         val lineText = if (words.isEmpty()) getDirectText(p).trim() else buildLineText(words)
-        
+
         if (lineText.isNotEmpty()) {
             val bgLines = if (backgroundLines.isNotEmpty()) {
                 listOf(ParsedLine(
@@ -212,7 +207,7 @@ object TTMLParser {
         val text = span.textContent ?: ""
         if (begin.isNotEmpty() && end.isNotEmpty()) {
             val next = node.nextSibling
-            val space = (text.isNotEmpty() && text.last().isWhitespace()) || 
+            val space = (text.isNotEmpty() && text.last().isWhitespace()) ||
                         (next?.nodeType == Node.TEXT_NODE && next.textContent?.firstOrNull()?.isWhitespace() == true)
             spanInfos.add(SpanInfo(text, parseTime(begin) + offset, parseTime(end) + offset, space))
         }
@@ -222,7 +217,7 @@ object TTMLParser {
         val begin = timingAttr(span, "begin")
         val start = if (begin.isNotEmpty()) parseTime(begin) + offset else parentStart
         val spanInfos = mutableListOf<SpanInfo>()
-        
+
         var child = span.firstChild
         var hasSpans = false
         while (child != null) {
@@ -236,12 +231,12 @@ object TTMLParser {
             }
             child = child.nextSibling
         }
-        
+
         if (!hasSpans) {
             val text = span.textContent?.trim() ?: ""
             return ParsedLine(text, start, emptyList(), isBackground = true)
         }
-        
+
         val words = mergeSpansIntoWords(spanInfos)
         val text = if (words.isEmpty()) getDirectText(span).trim() else buildLineText(words)
         return ParsedLine(text, start, words, isBackground = true)
@@ -271,59 +266,31 @@ object TTMLParser {
         }
     }.trim()
 
+    // ✅ كل span كلمة مستقلة بدون merge
     private fun mergeSpansIntoWords(spanInfos: List<SpanInfo>): List<ParsedWord> {
         if (spanInfos.isEmpty()) return emptyList()
-        val words = mutableListOf<ParsedWord>()
-        var text = StringBuilder(spanInfos[0].text)
-        var start = spanInfos[0].startTime
-        var end = spanInfos[0].endTime
-        
-        for (i in 1 until spanInfos.size) {
-            val prev = spanInfos[i - 1]
-            val curr = spanInfos[i]
-            if (prev.hasTrailingSpace && !prev.text.endsWith('-')) {
-                words.add(ParsedWord(text.toString(), start, end, true))
-                text = StringBuilder(curr.text)
-                start = curr.startTime
-                end = curr.endTime
-            } else {
-                text.append(curr.text)
-                end = curr.endTime
+        return spanInfos
+            .filter { it.text.trim().isNotEmpty() }
+            .map { span ->
+                ParsedWord(
+                    text = span.text.trim(),
+                    startTime = span.startTime,
+                    endTime = span.endTime,
+                    hasTrailingSpace = span.hasTrailingSpace
+                )
             }
-        }
-        words.add(ParsedWord(text.toString(), start, end, spanInfos.last().hasTrailingSpace))
-        return words.map { it.copy(text = it.text.trim()) }.filter { it.text.isNotEmpty() }
     }
 
     fun toLRC(lines: List<ParsedLine>): String {
-    val sb = StringBuilder(lines.size * 128)
+        val sb = StringBuilder(lines.size * 128)
 
-    lines.forEach { line ->
-        val time = formatLrcTime(line.startTime)
+        lines.forEach { line ->
+            val time = formatLrcTime(line.startTime)
 
-        // Main line
-        if (line.words.isNotEmpty()) {
-            sb.append('[').append(time.drop(1)) // [mm:ss.cc]
-            line.words.forEach { w ->
-                val start = formatLrcTime(w.startTime)
-                val end = formatLrcTime(w.endTime)
-                val text = w.text.trimEnd()
-                sb.append('<').append(start.drop(1).dropLast(1)).append('>')
-                sb.append(text)
-                sb.append('<').append(end.drop(1).dropLast(1)).append('>')
-                if (w.hasTrailingSpace) sb.append(' ')
-            }
-            sb.append('\n')
-        } else if (line.text.isNotBlank()) {
-            sb.append(time).append(line.text).append('\n')
-        }
-
-        // Background lines
-        line.backgroundLines.forEach { bg ->
-            val bgTime = formatLrcTime(bg.startTime)
-            if (bg.words.isNotEmpty()) {
-                sb.append('[').append(bgTime.drop(1))
-                bg.words.forEach { w ->
+            // Main line
+            if (line.words.isNotEmpty()) {
+                sb.append(time)
+                line.words.forEach { w ->
                     val start = formatLrcTime(w.startTime)
                     val end = formatLrcTime(w.endTime)
                     val text = w.text.trimEnd()
@@ -333,25 +300,47 @@ object TTMLParser {
                     if (w.hasTrailingSpace) sb.append(' ')
                 }
                 sb.append('\n')
-            } else if (bg.text.isNotBlank()) {
-                sb.append(bgTime).append(bg.text).append('\n')
+            } else if (line.text.isNotBlank()) {
+                sb.append(time).append(line.text).append('\n')
+            }
+
+            // Background lines
+            line.backgroundLines.forEach { bg ->
+                val bgTime = formatLrcTime(bg.startTime)
+                if (bg.words.isNotEmpty()) {
+                    sb.append(bgTime)
+                    bg.words.forEach { w ->
+                        val start = formatLrcTime(w.startTime)
+                        val end = formatLrcTime(w.endTime)
+                        val text = w.text.trimEnd()
+                        sb.append('<').append(start.drop(1).dropLast(1)).append('>')
+                        sb.append(text)
+                        sb.append('<').append(end.drop(1).dropLast(1)).append('>')
+                        if (w.hasTrailingSpace) sb.append(' ')
+                    }
+                    sb.append('\n')
+                } else if (bg.text.isNotBlank()) {
+                    sb.append(bgTime).append(bg.text).append('\n')
+                }
             }
         }
+
+        return sb.toString()
     }
 
-    return sb.toString()
-}
+    // ✅ دقة 3 أرقام بعد الفاصلة [00:00.000]
     private fun formatLrcTime(time: Double): String {
         val ms = (time * 1000).toLong()
         val m = ms / 60000
         val s = (ms % 60000) / 1000
-        val c = (ms % 1000) / 10
-        val sb = StringBuilder(10)
+        val c = ms % 1000
+        val sb = StringBuilder(12)
         sb.append('[')
         if (m < 10) sb.append('0')
         sb.append(m).append(':')
         if (s < 10) sb.append('0')
         sb.append(s).append('.')
+        if (c < 100) sb.append('0')
         if (c < 10) sb.append('0')
         sb.append(c).append(']')
         return sb.toString()
@@ -363,9 +352,12 @@ object TTMLParser {
         if (c1 != -1) {
             val c2 = t.lastIndexOf(':')
             return if (c1 == c2) {
-                (t.substring(0, c1).toIntOrNull() ?: 0) * 60.0 + (t.substring(c1 + 1).toDoubleOrNull() ?: 0.0)
+                (t.substring(0, c1).toIntOrNull() ?: 0) * 60.0 +
+                (t.substring(c1 + 1).toDoubleOrNull() ?: 0.0)
             } else {
-                (t.substring(0, c1).toIntOrNull() ?: 0) * 3600.0 + (t.substring(c1 + 1, c2).toIntOrNull() ?: 0) * 60.0 + (t.substring(c2 + 1).toDoubleOrNull() ?: 0.0)
+                (t.substring(0, c1).toIntOrNull() ?: 0) * 3600.0 +
+                (t.substring(c1 + 1, c2).toIntOrNull() ?: 0) * 60.0 +
+                (t.substring(c2 + 1).toDoubleOrNull() ?: 0.0)
             }
         }
         if (t.endsWith("ms")) return (t.substring(0, t.length - 2).toDoubleOrNull() ?: 0.0) / 1000.0
