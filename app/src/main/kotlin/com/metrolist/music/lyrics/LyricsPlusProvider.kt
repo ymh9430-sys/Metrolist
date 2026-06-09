@@ -28,7 +28,7 @@ import timber.log.Timber
 private data class AgentInfo(
     val type: String? = null,
     val name: String? = null,
-    val alias: String? = null, // "v1", "v2", etc.
+    val alias: String? = null,
 )
 
 @Serializable
@@ -56,8 +56,8 @@ private data class Translation(
 
 @Serializable
 private data class LyricWord(
-    val time: Long = 0,       // milliseconds
-    val duration: Long = 0,   // milliseconds
+    val time: Long = 0,
+    val duration: Long = 0,
     val text: String = "",
     val isBackground: Boolean = false,
 )
@@ -72,14 +72,14 @@ private data class Transliteration(
 @Serializable
 private data class LineElement(
     val key: String? = null,
-    val singer: String? = null,       // already-resolved alias, e.g. "v1"
+    val singer: String? = null,
     val songPartIndex: Int? = null,
 )
 
 @Serializable
 private data class LyricLine(
-    val time: Long = 0,               // milliseconds
-    val duration: Long = 0,           // milliseconds
+    val time: Long = 0,
+    val duration: Long = 0,
     val text: String = "",
     val syllabus: List<LyricWord>? = null,
     val element: LineElement? = null,
@@ -122,18 +122,15 @@ private data class BinimumLyricsFetchResult(
 
 object LyricsPlusProvider : LyricsProvider {
     override val name = "LyricsPlus"
-    // ISRC format: 2-letter country code + 3-char alphanumeric registrant + 2-digit year + 5-digit designation.
     private const val ISRC_PATTERN = "^[A-Z]{2}[A-Z0-9]{3}\\d{2}\\d{5}$"
     private val ISRC_REGEX by lazy { Regex(ISRC_PATTERN) }
     private const val BINIMUM_API_BASE_URL = "https://lyrics-api.binimum.org/"
 
     private val baseUrls = listOf(
-        "https://lyricsplus.binimum.org", //binimum's alternate server
-        "https://lyricsplus.atomix.one/", //meow's mirror
-        "https://lyricsplus.prjktla.my.id", //main server
-        "https://lyricsplus-seven.vercel.app", //jigen's mirror
-        //"https://lyricsplus.prjktla.workers.dev", //ibra's cf workers (disabled due it has 100000 request per day limit)
-        //"https://lyrics-plus-backend.vercel.app", //ibra's vercel (disabled due it's disabled)
+        "https://lyricsplus.binimum.org",
+        "https://lyricsplus.atomix.one/",
+        "https://lyricsplus.prjktla.my.id",
+        "https://lyricsplus-seven.vercel.app",
     )
 
     @Volatile
@@ -156,13 +153,11 @@ object LyricsPlusProvider : LyricsProvider {
                     ignoreUnknownKeys = true
                 })
             }
-
             install(HttpTimeout) {
                 requestTimeoutMillis = 15000
                 connectTimeoutMillis = 10000
                 socketTimeoutMillis = 15000
             }
-
             expectSuccess = false
         }
     }
@@ -180,7 +175,6 @@ object LyricsPlusProvider : LyricsProvider {
         val response = client.get("$url/v2/lyrics/get") {
             parameter("title", title)
             parameter("artist", artist)
-            // LyricsPlus expects duration in seconds, while MediaMetadata stores milliseconds.
             if (duration > 0) parameter("duration", duration / 1000)
             if (!album.isNullOrBlank()) parameter("album", album)
         }
@@ -197,7 +191,6 @@ object LyricsPlusProvider : LyricsProvider {
             Timber.tag("LyricsPlus").d("Skipping fetch: missing title or artist")
             return null
         }
-
         for (baseUrl in getPrioritizedServers()) {
             try {
                 val result = fetchFromUrl(baseUrl, title, artist, duration, album)
@@ -223,7 +216,6 @@ object LyricsPlusProvider : LyricsProvider {
         val normalizedIsrc = normalizedId.uppercase()
         val canUseIsrc = normalizedIsrc.matches(ISRC_REGEX)
         val hasMetadata = title.isNotBlank() && artist.isNotBlank()
-        // Search is valid when we have an ISRC, or when metadata (title + artist) is present.
         if (!canUseIsrc && !hasMetadata) return null
 
         suspend fun requestByTrackMetadata() = runCatching {
@@ -265,9 +257,7 @@ object LyricsPlusProvider : LyricsProvider {
         }.getOrNull()?.let { ttmlResponse ->
             if (ttmlResponse.status.isSuccess()) {
                 runCatching { ttmlResponse.body<String>() }.getOrNull()
-            } else {
-                null
-            }
+            } else null
         } ?: return null
 
         val parsedLines = runCatching { TTMLParser.parseTTML(ttml) }
@@ -285,43 +275,50 @@ object LyricsPlusProvider : LyricsProvider {
         )
     }
 
-    /**
-     * Converts a LyricsPlus JSON response to
-     * Metrolist's extended LRC:
-     *
-     *   [mm:ss.cc]{agent:v1}line text     ← multi-voice agent tag
-     *   <word:startSec:endSec|word:...>   ← word-sync block (Word mode only)
-     *   [mm:ss.cc]{bg}bg vocal text       ← first in a consecutive bg run
-     *   <word:startSec:endSec|...>
-     */
-    [mm:ss.mmm]<mm:ss.mmm>word<mm:ss.mmm> <mm:ss.mmm>word<mm:ss.mmm>
+    // ✅ convertToLrc - يحول LyricsPlus JSON لنفس format تطبيق BestLyrics
+    // [mm:ss.mmm]<mm:ss.mmm>word<mm:ss.mmm> <mm:ss.mmm>word<mm:ss.mmm>
+    private fun convertToLrc(response: LyricsPlusResponse?): String? {
+        val lyrics = response?.lyrics?.takeIf { it.isNotEmpty() } ?: return null
+        val isWordSync = response.type.equals("Word", ignoreCase = true)
+        val result = mutableListOf<String>()
 
-    /** Joins word texts as-is (spaces are embedded in each text value by the API). */
-    private fun buildText(words: List<LyricWord>): String =
-        words.joinToString("") { it.text }.trim()
+        for (line in lyrics) {
+            val mainWords = line.syllabus?.filter { !it.isBackground } ?: emptyList()
+            val bgWords = line.syllabus?.filter { it.isBackground } ?: emptyList()
 
-    /** Appends `[mm:ss.cc]<tag>text\n` */
-    private fun StringBuilder.appendLrcLine(timeMs: Long, tag: String, text: String) {
-        append(formatLrcTime(timeMs))
-        append(tag)
-        append(text)
-        append('\n')
-    }
+            // Main line
+            if (isWordSync && mainWords.isNotEmpty()) {
+                val lineStart = formatLrcTime(mainWords.first().time)
+                var lineLrc = "[$lineStart]"
+                mainWords.forEach { w ->
+                    val start = formatLrcTime(w.time)
+                    val end = formatLrcTime(w.time + w.duration)
+                    val text = w.text.trimEnd()
+                    val spaces = w.text.substring(text.length)
+                    lineLrc += "<$start>$text<$end>$spaces"
+                }
+                result.add(lineLrc)
+            } else if (line.text.isNotBlank()) {
+                val lineStart = formatLrcTime(line.time)
+                result.add("[$lineStart]${line.text.trim()}")
+            }
 
-    /** Appends `<word:startSec:endSec|...>\n` */
-    private fun StringBuilder.appendWordBlock(words: List<LyricWord>) {
-        val valid = words.filter { it.text.isNotBlank() }
-        if (valid.isEmpty()) return
-        append('<')
-        valid.forEachIndexed { i, w ->
-            val startSec = w.time / 1000.0
-            val endSec   = (w.time + w.duration) / 1000.0
-            append(w.text.trim())
-            append(':').append(startSec)
-            append(':').append(endSec)
-            if (i < valid.lastIndex) append('|')
+            // Background vocals
+            if (isWordSync && bgWords.isNotEmpty()) {
+                val bgStart = formatLrcTime(bgWords.first().time)
+                var bgLrc = "[$bgStart]"
+                bgWords.forEach { w ->
+                    val start = formatLrcTime(w.time)
+                    val end = formatLrcTime(w.time + w.duration)
+                    val text = w.text.trimEnd()
+                    val spaces = w.text.substring(text.length)
+                    bgLrc += "<$start>$text<$end>$spaces"
+                }
+                result.add(bgLrc)
+            }
         }
-        append(">\n")
+
+        return result.joinToString("\n").ifBlank { null }
     }
 
     private fun formatLrcTime(timeMs: Long): String {
